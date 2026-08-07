@@ -347,7 +347,7 @@ class OAuth2Plugin(_OAuth2Plugin, plugins.SingletonPlugin):
             g.user = None
             toolkit.g.user = None
             toolkit.g.userobj = None
-            log.warning('The user is not currently logged...')
+            log.debug('The user is not currently logged...')
 
     def get_auth_functions(self):
         # we need to prevent some actions being authorized.
