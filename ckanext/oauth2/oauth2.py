@@ -194,7 +194,7 @@ class OAuth2Helper(object):
 
     def query_profile_api_legacy(self, token):
         try:
-            profile_response = requests.get(self.profile_api_url + '?access_token=%s' % token['access_token'], verify=self.verify_https)
+            profile_response = requests.get(self.profile_api_url + '?access_token=%s' % token['access_token'], verify=self.verify_https, timeout=5)
             if not profile_response.ok:
                 raise ValueError(profile_response.json().get('error_description'))
             return profile_response
@@ -207,7 +207,7 @@ class OAuth2Helper(object):
             headers = {
                 'Authorization': 'Bearer %s' % token['access_token']
             }
-            profile_response = requests.get(self.profile_api_url, headers=headers, verify=self.verify_https)
+            profile_response = requests.get(self.profile_api_url, headers=headers, verify=self.verify_https, timeout=5)
             if not profile_response.ok:
                 raise ValueError(profile_response.json().get('error_description'))
             return profile_response
