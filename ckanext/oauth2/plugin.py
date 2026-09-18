@@ -28,7 +28,12 @@ import jwt
 from ckan import plugins
 from ckan.common import g
 from ckan.plugins import toolkit
-from ckan.views import _get_user_for_apitoken
+
+try:
+    from ckan.views import _get_user_for_apitoken
+except ImportError:
+    # CKAN 2.12 moved _get_user_for_apitoken to flask_app
+    from ckan.config.middleware.flask_app import _get_user_for_apitoken
 from flask_login import current_user, login_user, logout_user
 
 import ckanext.oauth2.db as db
@@ -147,17 +152,9 @@ class OAuth2Plugin(_OAuth2Plugin, plugins.SingletonPlugin):
         """
         from flask import current_app
 
-        # Dedicated try/except for this private import so failures are
-        # clearly diagnosed in logs rather than silently swallowed.
-        try:
-            from ckan.views import _get_user_for_apitoken
-        except ImportError as ie:
-            log.error(
-                "Cannot import _get_user_for_apitoken from ckan.views -- "
-                "request_loader will NOT be installed. CKAN native API "
-                "token fallback will be unavailable. ImportError: %s", ie
-            )
-            raise
+        # _get_user_for_apitoken is imported at module level with a
+        # version-tolerant fallback (ckan.views on CKAN <= 2.11,
+        # ckan.config.middleware.flask_app on CKAN >= 2.12).
 
         login_manager = current_app.login_manager
         plugin_ref = self  # closure reference
