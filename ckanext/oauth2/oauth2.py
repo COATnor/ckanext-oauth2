@@ -43,6 +43,8 @@ def generate_state(url):
 
 
 def get_came_from(state):
+    if not state:
+        return '/'
     return json.loads(b64decode(state)).get(CAME_FROM_FIELD, '/')
 
 
