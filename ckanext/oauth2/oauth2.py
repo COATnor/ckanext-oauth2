@@ -220,16 +220,12 @@ class OAuth2Helper(object):
     def find_user(self, username: Optional[str], email: Optional[str]) -> Optional[model.User]:
         if username:
             users = model.User.by_name(username)
-            if users is not None and not isinstance(users, list):
+            if users is not None and users.state != model.State.DELETED:
                 return users
-            elif isinstance(users, list) and len(users) == 1:
-                return users[0]
         if email:
             users = model.User.by_email(email)
-            if users is not None and not isinstance(users, list):
+            if users is not None and users.state != model.State.DELETED:
                 return users
-            elif isinstance(users, list) and len(users) == 1:
-                return users[0]
         raise ValueError("User not found")
 
     def create_user_object(self, user_profile) -> model.User:
