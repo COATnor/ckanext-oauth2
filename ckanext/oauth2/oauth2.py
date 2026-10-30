@@ -29,6 +29,8 @@ import requests
 from urllib.parse import urljoin
 from oauthlib.oauth2 import InsecureTransportError
 from requests_oauthlib import OAuth2Session
+from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from ckan.plugins import toolkit # type: ignore
 from ckan.common import session, login_user
 import ckan.model as model
@@ -217,15 +219,15 @@ class OAuth2Helper(object):
             log.error(f'error: {e}')
             raise
 
-    def find_user(self, username: Optional[str], email: Optional[str]) -> Optional[model.User]:
+    def find_user(self, username: Optional[str], email: Optional[str]) -> tuple[model.User, str]:
         if username:
-            users = model.User.by_name(username)
-            if users is not None and users.state != model.State.DELETED:
-                return users
+            user = model.User.by_name(username)
+            if user is not None and user.state != model.State.DELETED:
+                return user, 'name'
         if email:
-            users = model.User.by_email(email)
-            if users is not None and users.state != model.State.DELETED:
-                return users
+            user = model.User.by_email(email)
+            if user is not None and user.state != model.State.DELETED:
+                return user, 'email'
         raise ValueError("User not found")
 
     def create_user_object(self, user_profile) -> model.User:
@@ -345,24 +347,56 @@ class OAuth2Helper(object):
         log.debug('identify: merged user_profile=%s', user_profile)
 
         # Try to find existing user
+        email_matched = False
         try:
-            user = self.find_user(
+            user, matched_by = self.find_user(
                 user_profile.get(self.profile_api_user_field),
                 user_profile.get(self.profile_api_mail_field)
             )
+            email_matched = matched_by == 'email'
         except ValueError:
             # Create new user if not found
             user = self.create_user_object(user_profile)
 
+        profile_email = user_profile.get(self.profile_api_mail_field)
+        profile_fullname = user_profile.get(self.profile_api_fullname_field)
+
+        if email_matched and user.state == model.State.PENDING:
+            log.info("Promoting invited user %s to active (OAuth2 login)", user.name)
+            user.state = model.State.ACTIVE
+            if not user.email:
+                user.email = profile_email
+            if not user.fullname:
+                user.fullname = profile_fullname
+
         # Save the user in the database
-        model.Session.add(user)
-        model.Session.commit()
-        model.Session.remove()
+        try:
+            model.Session.add(user)
+            model.Session.commit()
+        except IntegrityError:
+            model.Session.rollback()
+            active = None
+            if profile_email:
+                active = model.Session.query(model.User).filter(
+                    func.lower(model.User.email) == profile_email.lower(),
+                    model.User.state == model.State.ACTIVE,
+                ).first()
+            if active is None:
+                raise
+            user = active
+        finally:
+            model.Session.remove()
         return user.name, user
 
     def log_user_into_ckan(self, user_obj):
         # Log the user in and remember the session
-        login_user(user_obj, remember=True)
+        if not login_user(user_obj, remember=True):
+            log.error("OAuth2 login refused for user %s (state=%s)", user_obj.name, user_obj.state)
+            raise ValueError(
+                toolkit._(
+                    "Your account is not active yet. Please contact the data portal administrators."
+                )
+            )
 
     def redirect_from_callback(self):
         '''Redirect to the callback URL after a successful authentication.'''

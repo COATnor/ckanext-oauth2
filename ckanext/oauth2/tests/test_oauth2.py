@@ -332,7 +332,7 @@ class TestOAuth2Plugin:
 
         oauth2.model.User = MagicMock(return_value=user)
         oauth2.model.User.by_name = MagicMock(return_value=user)
-        oauth2.model.User.by_email = MagicMock(return_value=[user])
+        oauth2.model.User.by_email = MagicMock(return_value=user)
 
         # Call identify
         returned_username, returned_user = helper.identify(OAUTH2TOKEN)
@@ -390,7 +390,7 @@ class TestOAuth2Plugin:
 
         oauth2.model.User = MagicMock(return_value=user)
         oauth2.model.User.by_name = MagicMock(return_value=None)
-        oauth2.model.User.by_email = MagicMock(return_value=[])
+        oauth2.model.User.by_email = MagicMock(return_value=None)
 
         # Call identify
         returned_username, returned_user = helper.identify(OAUTH2TOKEN)
@@ -445,7 +445,7 @@ class TestOAuth2Plugin:
 
         oauth2.model.User = MagicMock(return_value=user)
         oauth2.model.User.by_name = MagicMock(return_value=user)
-        oauth2.model.User.by_email = MagicMock(return_value=[user])
+        oauth2.model.User.by_email = MagicMock(return_value=user)
 
         # Call identify
         returned_username, returned_user = helper.identify(OAUTH2TOKEN)
@@ -499,7 +499,7 @@ class TestOAuth2Plugin:
 
         oauth2.model.User = MagicMock(return_value=user)
         oauth2.model.User.by_name = MagicMock(return_value=None)
-        oauth2.model.User.by_email = MagicMock(return_value=[])
+        oauth2.model.User.by_email = MagicMock(return_value=None)
 
         # Call identify
         returned_username, returned_user = helper.identify(OAUTH2TOKEN)
@@ -515,6 +515,103 @@ class TestOAuth2Plugin:
         oauth2.model.Session.add.assert_called_once_with(user)
         oauth2.model.Session.commit.assert_called_once()
         oauth2.model.Session.remove.assert_called_once()
+
+    @httpretty.activate
+    def test_identify_promotes_pending_user(self, oauth2_setup):
+        helper = self._helper(oauth2_setup, fullname_field=True)
+
+        invited_name = 'invited_name_123'
+        email = 'invited@test.com'
+        fullname = 'Invited Person'
+
+        user_info = {
+            oauth2_setup['user_field']: 'some-uuid-identity',
+            oauth2_setup['email_field']: email,
+            oauth2_setup['fullname_field']: fullname,
+        }
+        httpretty.register_uri(
+            httpretty.GET, oauth2_setup['profile_api_url'], body=json.dumps(user_info)
+        )
+
+        request = make_request(False, 'localhost', '/oauth2/callback', {})
+        oauth2.toolkit.request = request
+        oauth2.model.Session = MagicMock()
+
+        user = MagicMock()
+        user.name = invited_name
+        user.state = oauth2.model.State.PENDING
+        user.email = None
+        user.fullname = None
+
+        oauth2.model.User = MagicMock(return_value=user)
+        oauth2.model.User.by_name = MagicMock(return_value=None)
+        oauth2.model.User.by_email = MagicMock(return_value=user)
+
+        returned_username, returned_user = helper.identify(OAUTH2TOKEN)
+
+        assert returned_username == invited_name
+        assert returned_user is user
+        assert returned_user.state == oauth2.model.State.ACTIVE
+        assert returned_user.email == email
+        assert returned_user.fullname == fullname
+        oauth2.model.User.by_name.assert_called_once()
+        oauth2.model.User.by_email.assert_called_once_with(email)
+
+        _, returned_user = helper.identify(OAUTH2TOKEN)
+        assert returned_user.state == oauth2.model.State.ACTIVE
+
+    @httpretty.activate
+    def test_identify_does_not_promote_deleted_user(self, oauth2_setup):
+        helper = self._helper(oauth2_setup, fullname_field=True)
+
+        email = 'deleted@test.com'
+        username = 'some-uuid-identity'
+
+        user_info = {
+            oauth2_setup['user_field']: username,
+            oauth2_setup['email_field']: email,
+        }
+        httpretty.register_uri(
+            httpretty.GET, oauth2_setup['profile_api_url'], body=json.dumps(user_info)
+        )
+
+        request = make_request(False, 'localhost', '/oauth2/callback', {})
+        oauth2.toolkit.request = request
+        oauth2.model.Session = MagicMock()
+
+        deleted_user = MagicMock()
+        deleted_user.name = 'deleted_invite'
+        deleted_user.state = oauth2.model.State.DELETED
+
+        new_user = MagicMock()
+        new_user.name = username
+        new_user.email = email
+        new_user.state = oauth2.model.State.ACTIVE
+
+        oauth2.model.User = MagicMock(return_value=new_user)
+        oauth2.model.User.by_name = MagicMock(return_value=None)
+        oauth2.model.User.by_email = MagicMock(return_value=deleted_user)
+
+        returned_username, returned_user = helper.identify(OAUTH2TOKEN)
+
+        assert returned_username == username
+        assert returned_user is new_user
+        assert deleted_user.state == oauth2.model.State.DELETED
+        oauth2.model.User.assert_called_once_with(name=username, email=email)
+        oauth2.model.User.by_email.assert_called_once_with(email)
+
+    def test_log_user_into_ckan_raises_for_inactive_user(self, oauth2_setup):
+        helper = self._helper(oauth2_setup)
+
+        user = MagicMock()
+        user.name = 'pending_user'
+        user.state = oauth2.model.State.PENDING
+
+        with patch('ckanext.oauth2.oauth2.login_user', return_value=False) as login_mock:
+            with pytest.raises(ValueError):
+                helper.log_user_into_ckan(user)
+
+        login_mock.assert_called_once_with(user, remember=True)
 
     def test_identify_jwt(self, oauth2_setup):
 
@@ -596,7 +693,7 @@ class TestOAuth2Plugin:
             oauth2.model.User = MagicMock(return_value=user)
             # User doesn't exist - find_user should raise ValueError
             oauth2.model.User.by_name = MagicMock(return_value=None)
-            oauth2.model.User.by_email = MagicMock(return_value=[])
+            oauth2.model.User.by_email = MagicMock(return_value=None)
 
             returned_username, returned_user = helper.identify(token)
 
@@ -624,7 +721,7 @@ class TestOAuth2Plugin:
             oauth2.model.User = MagicMock(return_value=user)
             # User doesn't exist
             oauth2.model.User.by_name = MagicMock(return_value=None)
-            oauth2.model.User.by_email = MagicMock(return_value=[])
+            oauth2.model.User.by_email = MagicMock(return_value=None)
 
             returned_username, returned_user = helper.identify(token)
 
@@ -660,7 +757,7 @@ class TestOAuth2Plugin:
             user.fullname = 'Test User'
             oauth2.model.User = MagicMock(return_value=user)
             oauth2.model.User.by_name = MagicMock(return_value=None)
-            oauth2.model.User.by_email = MagicMock(return_value=[])
+            oauth2.model.User.by_email = MagicMock(return_value=None)
 
             returned_username, returned_user = helper.identify(token)
 
@@ -696,7 +793,7 @@ class TestOAuth2Plugin:
             user.fullname = 'Test User'  # Fullname from profile API
             oauth2.model.User = MagicMock(return_value=user)
             oauth2.model.User.by_name = MagicMock(return_value=None)
-            oauth2.model.User.by_email = MagicMock(return_value=[])
+            oauth2.model.User.by_email = MagicMock(return_value=None)
 
             returned_username, returned_user = helper.identify(token)
 
@@ -726,7 +823,7 @@ class TestOAuth2Plugin:
 
         oauth2.model.Session = MagicMock()
         oauth2.model.User.by_name = MagicMock(return_value=None)
-        oauth2.model.User.by_email = MagicMock(return_value=[])
+        oauth2.model.User.by_email = MagicMock(return_value=None)
 
         # This should raise ValueError because username/email are not found
         with pytest.raises(ValueError, match="Username or email is required"):
