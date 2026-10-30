@@ -86,5 +86,12 @@ def callback():
 
     return response
 
+@oauth2.route('/user/reset')
+@oauth2.route('/user/reset/<key>')
+@oauth2.route('/user/register')
+def no_local_credentials(key=None):
+    helpers.flash_notice(toolkit._("This portal uses Feide. Please log in with Feide."))
+    return toolkit.redirect_to('user.login')
+
 def get_blueprints():
     return [oauth2]

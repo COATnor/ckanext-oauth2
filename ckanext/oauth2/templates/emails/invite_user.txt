@@ -1,0 +1,20 @@
+{% trans %}
+Dear {{ user_name }},
+
+You have been invited to {{ site_title }}.
+
+An account has already been prepared for you with the username {{ user_name }}. You can change it later.
+
+You have been added to the {{ group_type }} {{ group_title }} with the following role: {{ role_name }}.
+
+To activate your account, sign in with Feide at:
+
+   {{ site_url }}/user/login
+
+using the e-mail address this invitation was sent to. No password is needed.
+
+Have a nice day.
+
+--
+Message sent by {{ site_title }} ({{ site_url }})
+{% endtrans %}
