@@ -29,7 +29,11 @@ import jwt
 
 import ckanext.oauth2.oauth2 as oauth2
 from ckanext.oauth2.oauth2 import OAuth2Helper
+import ckanext.oauth2.plugin as oauth2_plugin
+import ckanext.oauth2.views as oauth2_views
+from flask import Flask
 import httpretty
+from sqlalchemy.exc import IntegrityError
 from unittest.mock import patch, MagicMock
 from oauthlib.oauth2 import InsecureTransportError, MissingCodeError, MissingTokenError
 from requests.exceptions import SSLError
@@ -612,6 +616,129 @@ class TestOAuth2Plugin:
                 helper.log_user_into_ckan(user)
 
         login_mock.assert_called_once_with(user, remember=True)
+
+    @httpretty.activate
+    def test_identify_does_not_promote_pending_user_matched_by_name(self, oauth2_setup):
+        helper = self._helper(oauth2_setup, fullname_field=True)
+
+        username = 'pending_name'
+        user_info = {
+            oauth2_setup['user_field']: username,
+            oauth2_setup['email_field']: 'pending@test.com',
+        }
+        httpretty.register_uri(
+            httpretty.GET, oauth2_setup['profile_api_url'], body=json.dumps(user_info)
+        )
+
+        request = make_request(False, 'localhost', '/oauth2/callback', {})
+        oauth2.toolkit.request = request
+        oauth2.model.Session = MagicMock()
+
+        user = MagicMock()
+        user.name = username
+        user.state = oauth2.model.State.PENDING
+
+        oauth2.model.User = MagicMock()
+        oauth2.model.User.by_name = MagicMock(return_value=user)
+        oauth2.model.User.by_email = MagicMock(return_value=None)
+
+        returned_username, returned_user = helper.identify(OAUTH2TOKEN)
+
+        assert returned_user is user
+        assert user.state == oauth2.model.State.PENDING
+        oauth2.model.User.by_email.assert_not_called()
+
+    @httpretty.activate
+    def test_identify_integrity_error_resolves_to_active_account(self, oauth2_setup):
+        helper = self._helper(oauth2_setup, fullname_field=True)
+
+        email = 'shared@test.com'
+        user_info = {
+            oauth2_setup['user_field']: 'some-uuid-identity',
+            oauth2_setup['email_field']: email,
+            oauth2_setup['fullname_field']: 'Shared Person',
+        }
+        httpretty.register_uri(
+            httpretty.GET, oauth2_setup['profile_api_url'], body=json.dumps(user_info)
+        )
+
+        request = make_request(False, 'localhost', '/oauth2/callback', {})
+        oauth2.toolkit.request = request
+        oauth2.model.Session = MagicMock()
+        oauth2.model.Session.commit.side_effect = IntegrityError('INSERT', {}, Exception('duplicate'))
+
+        new_user = MagicMock()
+        new_user.name = 'some-uuid-identity'
+        new_user.state = oauth2.model.State.ACTIVE
+
+        active_user = MagicMock()
+        active_user.name = 'active_account'
+        active_user.state = oauth2.model.State.ACTIVE
+
+        oauth2.model.User = MagicMock(return_value=new_user)
+        oauth2.model.User.by_name = MagicMock(return_value=None)
+        oauth2.model.User.by_email = MagicMock(return_value=None)
+        oauth2.model.Session.query.return_value.filter.return_value.first.return_value = active_user
+
+        returned_username, returned_user = helper.identify(OAUTH2TOKEN)
+
+        assert returned_username == 'active_account'
+        assert returned_user is active_user
+        oauth2.model.Session.query.assert_called_once_with(oauth2.model.User)
+        oauth2.model.Session.rollback.assert_called_once()
+        oauth2.model.Session.remove.assert_called_once()
+
+    @httpretty.activate
+    def test_identify_integrity_error_without_active_account_raises(self, oauth2_setup):
+        helper = self._helper(oauth2_setup, fullname_field=True)
+
+        email = 'shared@test.com'
+        user_info = {
+            oauth2_setup['user_field']: 'some-uuid-identity',
+            oauth2_setup['email_field']: email,
+        }
+        httpretty.register_uri(
+            httpretty.GET, oauth2_setup['profile_api_url'], body=json.dumps(user_info)
+        )
+
+        request = make_request(False, 'localhost', '/oauth2/callback', {})
+        oauth2.toolkit.request = request
+        oauth2.model.Session = MagicMock()
+        oauth2.model.Session.commit.side_effect = IntegrityError('INSERT', {}, Exception('duplicate'))
+
+        oauth2.model.User = MagicMock(return_value=MagicMock())
+        oauth2.model.User.by_name = MagicMock(return_value=None)
+        oauth2.model.User.by_email = MagicMock(return_value=None)
+        oauth2.model.Session.query.return_value.filter.return_value.first.return_value = None
+
+        with pytest.raises(IntegrityError):
+            helper.identify(OAUTH2TOKEN)
+
+        oauth2.model.Session.rollback.assert_called_once()
+        oauth2.model.Session.remove.assert_called_once()
+
+    def test_local_credential_routes_redirect_to_login(self):
+        app = Flask(__name__)
+        app.register_blueprint(oauth2_views.oauth2)
+
+        rules = sorted(
+            rule.rule
+            for rule in app.url_map.iter_rules()
+            if rule.endpoint == 'oauth2.no_local_credentials'
+        )
+        assert rules == ['/user/register', '/user/reset', '/user/reset/<key>']
+
+        with patch.object(oauth2_views, 'toolkit') as toolkit_mock, \
+                patch.object(oauth2_views, 'helpers') as helpers_mock:
+            oauth2_views.no_local_credentials(key='some-key')
+
+        toolkit_mock.redirect_to.assert_called_once_with('user.login')
+        helpers_mock.flash_notice.assert_called_once()
+
+    def test_user_create_is_in_auth_functions(self):
+        auth_functions = oauth2_plugin.OAuth2Plugin().get_auth_functions()
+
+        assert auth_functions['user_create'] is oauth2_plugin.user_create
 
     def test_identify_jwt(self, oauth2_setup):
 
